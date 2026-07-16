@@ -367,25 +367,67 @@ mks_dbus_speaker_connection_cb (DexFuture *future,
                                 gpointer   user_data)
 {
   MksDBusSpeaker *self = user_data;
-  MksSocketpairConnection *socketpair;
-  g_autoptr(GUnixFDList) fd_list = NULL;
   g_autoptr(GError) error = NULL;
   const GValue *value;
-  g_autofd int peer_fd = -1;
-  gint64 begin_time;
 
   g_assert (DEX_IS_FUTURE (future));
   g_assert (MKS_IS_DBUS_SPEAKER (self));
 
   if (!(value = dex_future_get_value (future, &error)))
     {
-      g_warning ("Failed to create socketpair D-Bus connection: %s", error->message);
+      g_warning ("Failed to create audio out listener D-Bus connection: %s",
+                 error->message);
       return dex_future_new_true ();
     }
 
-  socketpair = g_value_get_boxed (value);
-  peer_fd = mks_socketpair_connection_steal_fd (socketpair);
-  g_set_object (&self->connection, socketpair->connection);
+  g_set_object (&self->connection, g_value_get_object (value));
+
+  if (!g_dbus_interface_skeleton_export (G_DBUS_INTERFACE_SKELETON (self->listener),
+                                         self->connection,
+                                         "/org/qemu/Display1/AudioOutListener",
+                                         &error))
+    {
+      g_warning ("Failed to export AudioOutListener on D-Bus connection: %s",
+                 error->message);
+      return dex_future_new_true ();
+    }
+
+  g_dbus_connection_start_message_processing (self->connection);
+
+  return dex_future_new_true ();
+}
+
+static gboolean
+mks_dbus_speaker_setup (MksDevice *device,
+                        GObject   *object)
+{
+  MksDBusSpeaker *self = (MksDBusSpeaker *)device;
+  g_autoptr(MksQemuAudio) audio = NULL;
+  g_autoptr(GError) error = NULL;
+  g_autoptr(GUnixFDList) fd_list = NULL;
+  g_autoptr(GSocket) socket = NULL;
+  g_autoptr(GIOStream) io_stream = NULL;
+  gint64 begin_time;
+  g_autofd int us = -1;
+  g_autofd int them = -1;
+
+  g_assert (MKS_IS_DBUS_SPEAKER (self));
+  g_assert (MKS_QEMU_IS_OBJECT (object));
+
+  if (!(audio = mks_qemu_object_get_audio (MKS_QEMU_OBJECT (object))))
+    return FALSE;
+
+  g_set_object (&self->audio, audio);
+
+  /* Create the raw socketpair: us = our dbus end, them = peer fd for QEMU */
+  if (!mks_socketpair_create (&us, &them, &error) ||
+      !(socket = g_socket_new_from_fd (us, &error)))
+    {
+      g_warning ("Failed to create audio out listener socket: %s", error->message);
+      return TRUE;
+    }
+  us = -1;
+  io_stream = G_IO_STREAM (g_socket_connection_factory_create_connection (socket));
 
   self->listener = mks_qemu_audio_out_listener_skeleton_new ();
 
@@ -415,65 +457,45 @@ mks_dbus_speaker_connection_cb (DexFuture *future,
                            self,
                            G_CONNECT_SWAPPED);
 
-  if (!g_dbus_interface_skeleton_export (G_DBUS_INTERFACE_SKELETON (self->listener),
-                                         self->connection,
-                                         "/org/qemu/Display1/AudioOutListener",
-                                         &error))
-
-    {
-      g_warning ("Failed to export AudioOutListener on D-Bus connection: %s",
-                 error->message);
-      return dex_future_new_true ();
-    }
-
-  fd_list = g_unix_fd_list_new_from_array (&peer_fd, 1);
-  peer_fd = -1;
   begin_time = MKS_TRACE_BEGIN_MARK ();
+  dex_future_disown
+    (dex_future_finally
+       (mks_marked_future
+          (mks_dbus_connection_new (io_stream,
+                                    (G_DBUS_CONNECTION_FLAGS_DELAY_MESSAGE_PROCESSING |
+                                     G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_CLIENT),
+                                    NULL),
+           begin_time,
+           "speaker.socketpair-connection"),
+        mks_dbus_speaker_connection_cb,
+        g_object_ref (self),
+        g_object_unref));
 
-  return dex_future_finally (mks_marked_future (dex_dbus_connection_call_with_unix_fd_list (g_dbus_proxy_get_connection (G_DBUS_PROXY (self->audio)),
-                                                                                            g_dbus_proxy_get_name (G_DBUS_PROXY (self->audio)),
-                                                                                            g_dbus_proxy_get_object_path (G_DBUS_PROXY (self->audio)),
-                                                                                            "org.qemu.Display1.Audio",
-                                                                                            "RegisterOutListener",
-                                                                                            g_variant_new ("(h)", 0),
-                                                                                            G_VARIANT_TYPE ("()"),
-                                                                                            G_DBUS_CALL_FLAGS_NONE,
-                                                                                            -1,
-                                                                                            fd_list),
-                                                begin_time,
-                                                "speaker.register-out-listener"),
-                             mks_dbus_speaker_register_cb,
-                             g_object_ref (self),
-                             g_object_unref);
-}
+  /* Send 'them' to QEMU immediately without waiting for auth to complete.
+   * QEMU acts as the dbus server on that fd, which unblocks our auth. */
+  fd_list = g_unix_fd_list_new_from_array (&them, 1), them = -1;
+  begin_time = MKS_TRACE_BEGIN_MARK ();
+  dex_future_disown
+    (dex_future_finally
+       (mks_marked_future
+          (dex_dbus_connection_call_with_unix_fd_list
+             (g_dbus_proxy_get_connection (G_DBUS_PROXY (self->audio)),
+              g_dbus_proxy_get_name (G_DBUS_PROXY (self->audio)),
+              g_dbus_proxy_get_object_path (G_DBUS_PROXY (self->audio)),
+              "org.qemu.Display1.Audio",
+              "RegisterOutListener",
+              g_variant_new ("(h)", 0),
+              G_VARIANT_TYPE ("()"),
+              G_DBUS_CALL_FLAGS_NONE,
+              -1,
+              fd_list),
+           begin_time,
+           "speaker.register-out-listener"),
+        mks_dbus_speaker_register_cb,
+        g_object_ref (self),
+        g_object_unref));
 
-static gboolean
-mks_dbus_speaker_setup (MksDevice *device,
-                        GObject   *object)
-{
-  MksDBusSpeaker *self = (MksDBusSpeaker *)device;
-  g_autoptr(MksQemuAudio) audio = NULL;
-  gint64 begin_time;
-
-  g_assert (MKS_IS_DBUS_SPEAKER (self));
-  g_assert (MKS_QEMU_IS_OBJECT (object));
-
-  if ((audio = mks_qemu_object_get_audio (MKS_QEMU_OBJECT (object))))
-    {
-      g_set_object (&self->audio, audio);
-
-      begin_time = MKS_TRACE_BEGIN_MARK ();
-      dex_future_disown (dex_future_finally (mks_marked_future (mks_socketpair_connection_new (G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_CLIENT),
-                                                                begin_time,
-                                                                "speaker.socketpair-connection"),
-                                             mks_dbus_speaker_connection_cb,
-                                             g_object_ref (self),
-                                             g_object_unref));
-
-      return TRUE;
-    }
-
-  return FALSE;
+  return TRUE;
 }
 
 static void
