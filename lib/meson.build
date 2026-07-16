@@ -127,7 +127,7 @@ libmks_qemu = gnome.gdbus_codegen('mks-qemu',
          namespace: 'MksQemu',
            sources: 'dbus-display1.xml',
     object_manager: true,
-        extra_args: ['--extension-path=' + libdex_dep.get_variable(pkgconfig: 'gdbus_codegen_extension')],
+        extra_args: ['--extension-path=' + libdex_dep.get_variable('gdbus_codegen_extension')],
 )
 libmks_private_sources += libmks_qemu
 
