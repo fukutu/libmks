@@ -806,7 +806,8 @@ mks_dbus_speaker_remove_pcm_observer (MksSpeaker *speaker,
 
 static void
 mks_dbus_speaker_gst_source_update_caps (GstElement     *element,
-                                         MksAudioFormat *format)
+                                         MksAudioFormat *format,
+                                         guint           n_samples)
 {
   g_autoptr(GstCaps) caps = NULL;
 
@@ -815,6 +816,14 @@ mks_dbus_speaker_gst_source_update_caps (GstElement     *element,
 
   if ((caps = mks_audio_format_to_gst_caps (format)))
     gst_app_src_set_caps (GST_APP_SRC (element), caps);
+
+  if (n_samples > 0)
+    {
+      guint blocksize = n_samples
+                        * mks_audio_format_get_channels (format)
+                        * (mks_audio_format_get_bits (format) / 8 /* bits-per-byte */);
+      g_object_set (element, "blocksize", blocksize, NULL);
+    }
 }
 
 static void
@@ -832,7 +841,8 @@ mks_dbus_speaker_gst_source_stream_added_cb (GstElement     *element,
   source = g_object_get_data (G_OBJECT (element), "MksDBusSpeakerGstSource");
 
   if (source != NULL && source->stream_id == stream_id)
-    mks_dbus_speaker_gst_source_update_caps (element, format);
+    mks_dbus_speaker_gst_source_update_caps (element, format,
+                                             mks_qemu_audio_get_nsamples (speaker->audio));
 }
 
 static void
@@ -921,7 +931,8 @@ mks_dbus_speaker_create_gst_source (MksSpeaker *speaker,
                 NULL);
 
   if ((format = mks_dbus_speaker_dup_format (MKS_SPEAKER (self), stream_id)))
-    mks_dbus_speaker_gst_source_update_caps (element, format);
+    mks_dbus_speaker_gst_source_update_caps (element, format,
+                                             mks_qemu_audio_get_nsamples (self->audio));
 
   source = g_new0 (MksDBusSpeakerGstSource, 1);
   source->speaker = g_object_ref (self);
