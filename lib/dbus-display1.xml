@@ -703,6 +703,18 @@
     </method>
 
     <!--
+        NSamples:
+
+        The number of samples per read/write frames. (for example the default is
+        480, or 10ms at 48kHz)
+
+        (earlier version of the display interface do not provide this property)
+    -->
+    <property name="NSamples" type="u" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="const"/>
+    </property>
+
+    <!--
         Interfaces:
 
         This property lists extra interfaces provided by the
@@ -1006,5 +1018,23 @@
         (earlier version of the display interface do not provide this property)
     -->
     <property name="Interfaces" type="as" access="read"/>
+  </interface>
+
+  <!--
+      org.qemu.Display1.Chardev.VCEncoding:
+
+      Provides encoding information for virtual console chardevs.
+
+      This interface is present on chardev objects that are virtual
+      consoles, and exposes the character encoding used by the guest.
+  -->
+  <interface name="org.qemu.Display1.Chardev.VCEncoding">
+    <!--
+        Encoding:
+
+        The character encoding used by the virtual console
+        (matching ``ChardevVCEncoding``): ``cp437`` or ``utf8``.
+    -->
+    <property name="Encoding" type="s" access="read"/>
   </interface>
 </node>
