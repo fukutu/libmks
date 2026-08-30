@@ -69,6 +69,8 @@ main_fiber (gpointer user_data)
   g_autoptr(GDBusConnection) connection = NULL;
   g_autoptr(MksSession) session = NULL;
   g_autoptr(MksScreen) screen = NULL;
+  g_autoptr(MksClipboard) clipboard = NULL;
+  g_autoptr(MksClipboardRedirector) clipboard_redirector = NULL;
   g_autoptr(GError) error = NULL;
   GtkWindow *window;
   GtkWidget *display;
@@ -119,6 +121,21 @@ main_fiber (gpointer user_data)
   g_object_bind_property (session, "primary-screen",
                           display, "screen",
                           (G_BINDING_DEFAULT | G_BINDING_SYNC_CREATE));
+
+  if ((clipboard = mks_session_dup_clipboard (session)))
+    {
+      clipboard_redirector = mks_clipboard_redirector_new (clipboard,
+                                                            gtk_widget_get_display (display));
+
+      /* main_fiber() returns after setup, so keep the redirector alive for
+       * exactly as long as the viewer window instead of dropping it here. */
+      g_object_set_data_full (G_OBJECT (window),
+                              "mks-clipboard-redirector",
+                              g_steal_pointer (&clipboard_redirector),
+                              g_object_unref);
+    }
+  else
+    g_printerr ("No clipboard attached to session!\n");
 
   gtk_window_present (window);
 
