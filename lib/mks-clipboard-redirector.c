@@ -121,7 +121,7 @@ mks_clipboard_redirector_splice_cb (GObject      *object,
 
   dex_promise_resolve_boxed (state->promise,
                              MKS_TYPE_CLIPBOARD_CONTENT,
-                             content);
+                             g_steal_pointer (&content));
 
   read_state_free (state);
 }
