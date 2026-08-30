@@ -210,7 +210,10 @@ mks_dbus_clipboard_handle_grab_cb (MksDBusClipboard      *self,
   g_assert (G_IS_DBUS_METHOD_INVOCATION (invocation));
   g_assert (MKS_QEMU_IS_CLIPBOARD (skeleton));
 
-  if (selection < N_SELECTIONS && serial > self->serial[selection])
+  /* QEMU treats an equal serial as valid for the client side of a clipboard
+   * handoff. Reject only stale remote grabs, otherwise a guest can copy after
+   * receiving a host grab with the same serial and never become the owner. */
+  if (selection < N_SELECTIONS && serial >= self->serial[selection])
     {
       self->serial[selection] = serial;
       mks_dbus_clipboard_set_owner (self, selection, MKS_CLIPBOARD_OWNER_REMOTE, mime_types);
