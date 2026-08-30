@@ -46,9 +46,12 @@ struct _MksPaintable
   GdkDisplay                        *display;
   GdkPaintable                      *child;
   GdkCursor                         *cursor;
+  GdkCursor                         *guest_cursor;
+  GdkCursor                         *hidden_cursor;
   MksDmabufScanoutData              *scanout_data;
   int                                mouse_x;
   int                                mouse_y;
+  guint                              cursor_visible : 1;
   guint                              y0_top : 1;
 };
 
@@ -148,6 +151,21 @@ G_DEFINE_FINAL_TYPE_WITH_CODE (MksPaintable, mks_paintable, G_TYPE_OBJECT,
                                G_IMPLEMENT_INTERFACE (GDK_TYPE_PAINTABLE, paintable_iface_init))
 
 static void
+mks_paintable_sync_cursor (MksPaintable *self)
+{
+  GdkCursor *cursor;
+
+  g_assert (MKS_IS_PAINTABLE (self));
+
+  cursor = self->cursor_visible && self->guest_cursor != NULL
+         ? self->guest_cursor
+         : self->hidden_cursor;
+
+  if (g_set_object (&self->cursor, cursor))
+    g_object_notify_by_pspec (G_OBJECT (self), properties[PROP_CURSOR]);
+}
+
+static void
 mks_paintable_dispose (GObject *object)
 {
   MksPaintable *self = (MksPaintable *)object;
@@ -158,6 +176,8 @@ mks_paintable_dispose (GObject *object)
   g_clear_object (&self->listener_map);
   g_clear_object (&self->child);
   g_clear_object (&self->cursor);
+  g_clear_object (&self->guest_cursor);
+  g_clear_object (&self->hidden_cursor);
   g_clear_object (&self->display);
   g_clear_pointer (&self->scanout_data, mks_dmabuf_scanout_data_free);
 
@@ -223,6 +243,10 @@ mks_paintable_class_init (MksPaintableClass *klass)
 static void
 mks_paintable_init (MksPaintable *self)
 {
+  self->hidden_cursor = gdk_cursor_new_from_name ("none", NULL);
+  g_assert (self->hidden_cursor != NULL);
+  self->cursor = g_object_ref (self->hidden_cursor);
+  self->cursor_visible = FALSE;
 }
 
 static void
@@ -802,8 +826,8 @@ mks_paintable_listener_cursor_define (MksPaintable          *self,
 
   cursor = gdk_cursor_new_from_texture (texture, hot_x, hot_y, NULL);
 
-  if (g_set_object (&self->cursor, cursor))
-    g_object_notify_by_pspec (G_OBJECT (self), properties[PROP_CURSOR]);
+  if (g_set_object (&self->guest_cursor, cursor))
+    mks_paintable_sync_cursor (self);
 
 failure:
   mks_qemu_listener_complete_cursor_define (listener, invocation);
@@ -825,6 +849,13 @@ mks_paintable_listener_mouse_set (MksPaintable          *self,
 
   self->mouse_x = x;
   self->mouse_y = y;
+
+  on = !!on;
+  if (self->cursor_visible != on)
+    {
+      self->cursor_visible = on;
+      mks_paintable_sync_cursor (self);
+    }
 
   mks_qemu_listener_complete_mouse_set (listener, invocation);
 
